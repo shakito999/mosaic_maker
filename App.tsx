@@ -4,6 +4,29 @@ import AnalysisPanel from './components/AnalysisPanel';
 import { MosaicStyle, AnalysisData, PhysicalDimensions } from './types';
 import { generateMosaicImage, analyzeMosaicMaterials } from './services/geminiService';
 
+// Helper to safely detect API Key across different build environments (Vite, CRA, Next.js, etc.)
+const getEnvironmentApiKey = (): string | null => {
+  try {
+    // 1. Try standard process.env (Webpack/Node injected)
+    if (typeof process !== 'undefined' && process.env) {
+      if (process.env.API_KEY) return process.env.API_KEY;
+      if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY; // Create React App
+    }
+    
+    // 2. Try import.meta.env (Vite)
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      // @ts-ignore
+      if (import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
+      // @ts-ignore
+      if (import.meta.env.API_KEY) return import.meta.env.API_KEY;
+    }
+  } catch (e) {
+    console.warn("Environment variable access failed", e);
+  }
+  return null;
+};
+
 const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>('');
   const [selectedStyle, setSelectedStyle] = useState<MosaicStyle>(MosaicStyle.ROMAN_CLASSIC);
@@ -23,22 +46,24 @@ const App: React.FC = () => {
   // Handle API Key initialization
   useEffect(() => {
     const initKey = async () => {
-        // Check environment variable first
-        if (process.env.API_KEY) {
-            setApiKey(process.env.API_KEY);
+        // 1. Check for Hardcoded/Environment Variable Key
+        const envKey = getEnvironmentApiKey();
+        if (envKey) {
+            console.log("API Key found in environment variables");
+            setApiKey(envKey);
             return;
         }
 
-        // Check if user has previously selected a key via UI
+        // 2. Check if user has previously selected a key via AI Studio UI
         const win = window as any;
         if (win.aistudio) {
             try {
                 const hasKey = await win.aistudio.hasSelectedApiKey();
                 if (hasKey) {
-                    setApiKey('AVAILABLE_VIA_ENV');
+                    setApiKey('AVAILABLE_VIA_ENV'); // Value doesn't matter, just needs to be truthy
                 }
             } catch (e) {
-                console.error("Error checking API key", e);
+                console.error("Error checking AI Studio key", e);
             }
         }
     };
@@ -58,7 +83,7 @@ const App: React.FC = () => {
               setError("Failed to select API Key. Please try again.");
           }
       } else {
-          setError("API Key selection not supported in this environment.");
+          setError("API Key configuration required. If deploying, set VITE_API_KEY in your environment variables.");
       }
   };
 
@@ -92,7 +117,7 @@ const App: React.FC = () => {
         if (win.aistudio) {
             await handleSelectKey();
         } else {
-             setError("API Key is missing.");
+             setError("API Key is missing. Please add VITE_API_KEY to your environment variables.");
              return;
         }
     }
@@ -101,8 +126,18 @@ const App: React.FC = () => {
     setError(null);
 
     try {
-      const validKey = process.env.API_KEY || apiKey;
+      // If the key is just a placeholder flag, we rely on the env var or the injected key
+      const activeKey = (apiKey === 'AVAILABLE_VIA_ENV' && process.env.API_KEY) 
+        ? process.env.API_KEY 
+        : (apiKey === 'AVAILABLE_VIA_ENV' ? '' : apiKey);
       
+      // If we are in a deployed env where apiKey was set from VITE_API_KEY, use that
+      const validKey = activeKey || getEnvironmentApiKey() || '';
+
+      if (!validKey && !win.aistudio) {
+         throw new Error("No valid API Key found. Please check your Vercel/Environment configuration.");
+      }
+
       const [mosaicBase64, analysis] = await Promise.all([
         generateMosaicImage(validKey, sourceImage, selectedStyle, dimensions),
         analyzeMosaicMaterials(validKey, sourceImage, selectedStyle, dimensions)
